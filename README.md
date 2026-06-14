@@ -1,4 +1,4 @@
-# forgelayer-node
+# @forgelayer/node
 
 > Node.js / Express middleware for accepting crypto payments via [ForgeLayer](https://forgelayer.io).
 
@@ -9,7 +9,7 @@ Drop `createCheckout()` into any Express app and get crypto payment endpoints in
 ## Install
 
 ```bash
-npm install forgelayer-node
+npm install @forgelayer/node
 ```
 
 ---
@@ -18,7 +18,7 @@ npm install forgelayer-node
 
 ```js
 const express = require('express');
-const { createCheckout } = require('forgelayer-node');
+const { createCheckout } = require('@forgelayer/node');
 
 const app = express();
 
@@ -266,9 +266,9 @@ The secret is saved to `.fl_webhook_secret` alongside your project and auto-load
 
 ---
 
-## Usage with forgelayer-react
+## Usage with @forgelayer/react
 
-If you're using React on the frontend, pair this with [`forgelayer-react`](https://github.com/forgelayer-tech/forgelayer-react):
+If you're using React on the frontend, pair this with [`@forgelayer/react`](https://github.com/forgelayer-tech/forgelayer-react):
 
 ```js
 // Backend — forgelayer-node
@@ -277,7 +277,7 @@ app.use('/fl', checkout.middleware());
 
 ```jsx
 // Frontend — forgelayer-react
-import { ForgeLayerButton } from 'forgelayer-react';
+import { ForgeLayerButton } from '@forgelayer/react';
 
 <ForgeLayerButton amount={49.99} chain="ethereum" token="USDT" baseUrl="/fl" />
 ```
