@@ -1,0 +1,39 @@
+{
+  "name": "forgelayer-node",
+  "version": "1.0.0",
+  "description": "Node.js / Express middleware for crypto payments via ForgeLayer",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "src/server.js",
+    "src/browser.js",
+    "README.md"
+  ],
+  "keywords": [
+    "forgelayer", "crypto", "payments", "bitcoin", "ethereum",
+    "usdt", "express", "nodejs", "middleware", "checkout"
+  ],
+  "author": "ForgeLayer <support@forgelayer.io>",
+  "license": "MIT",
+  "homepage": "https://github.com/forgelayer/forgelayer-node#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/forgelayer/forgelayer-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/forgelayer/forgelayer-node/issues"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  }
+}
