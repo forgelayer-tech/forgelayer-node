@@ -168,7 +168,7 @@ The secret is saved to `.fl_webhook_secret` alongside your project and auto-load
 
 ## Usage with forgelayer-react
 
-If you're using React on the frontend, pair this with [`forgelayer-react`](https://github.com/forgelayer/forgelayer-react):
+If you're using React on the frontend, pair this with [`forgelayer-react`](https://github.com/forgelayer-tech/forgelayer-react):
 
 ```js
 // Backend — forgelayer-node

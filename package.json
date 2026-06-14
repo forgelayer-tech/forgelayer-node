@@ -18,13 +18,13 @@
   ],
   "author": "ForgeLayer <support@forgelayer.io>",
   "license": "MIT",
-  "homepage": "https://github.com/forgelayer/forgelayer-node#readme",
+  "homepage": "https://github.com/forgelayer-tech/forgelayer-node#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/forgelayer/forgelayer-node.git"
+    "url": "git+https://github.com/forgelayer-tech/forgelayer-node.git"
   },
   "bugs": {
-    "url": "https://github.com/forgelayer/forgelayer-node/issues"
+    "url": "https://github.com/forgelayer-tech/forgelayer-node/issues"
   },
   "engines": {
     "node": ">=16.0.0"
