@@ -40,7 +40,7 @@ try {
 
 const FL_API_BASE = 'https://api.forgelayer.io/v1';
 const CG_API_BASE = 'https://api.coingecko.com/api/v3';
-const SDK_VERSION = '1.1.0';
+const SDK_VERSION = '1.1.1';
 
 // Stablecoins pegged 1:1 to USD — skip CoinGecko for these
 const USD_STABLECOINS = new Set([
@@ -259,7 +259,8 @@ function createCheckout(config) {
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   function toSessionKey(orderId) {
-    return 'fl_' + String(orderId).replace(/[^a-z0-9]/gi, '').toLowerCase();
+    // SHA-256 so ORDER-1 and ORDER_1 don't collapse to the same key
+    return 'fl_' + crypto.createHash('sha256').update(String(orderId)).digest('hex').slice(0, 32);
   }
 
   async function markConfirmed(sessionKey, order) {
@@ -410,7 +411,10 @@ function createCheckout(config) {
     }
 
     const expected = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
-    if (!crypto.timingSafeEqual(Buffer.from(sig, 'utf8'), Buffer.from(expected, 'utf8'))) {
+    // timingSafeEqual throws if buffer lengths differ, so check length first
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
       return res.status(401).json({ ok: false, error: 'Invalid signature.' });
     }
 
@@ -507,8 +511,10 @@ function readBody(req) {
 
 // ── Webhook secret/ID persistence ─────────────────────────────────────────────
 
-const SECRET_FILE = path.join(__dirname, '..', '.fl_webhook_secret');
-const ID_FILE     = path.join(__dirname, '..', '.fl_webhook_id');
+// Use process.cwd() so the file lands in the developer's project root,
+// not inside node_modules/forgelayer-node/ where it gets wiped on reinstall.
+const SECRET_FILE = path.join(process.cwd(), '.fl_webhook_secret');
+const ID_FILE     = path.join(process.cwd(), '.fl_webhook_id');
 
 function loadSavedWebhookSecret() {
   try { return fs.readFileSync(SECRET_FILE, 'utf8').trim(); } catch (_) { return ''; }
