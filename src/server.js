@@ -466,8 +466,7 @@ function createCheckout(config) {
       url: webhookUrl, secret: newSecret, events: ['deposit_confirmed'], confirmations,
     });
 
-    const webhookId = data.id || data.webhookId || data.webhook_id || data.webhookid || '';
-    if (!webhookId) console.warn('[ForgeLayer] setupWebhook: could not find webhook ID in response:', JSON.stringify(data));
+    const webhookId = (data.webhooks && data.webhooks[0] && data.webhooks[0].id) || data.id || data.webhookId || '';
     saveWebhookSecret(newSecret);
     if (webhookId) saveWebhookId(webhookId);
     webhookSecret = newSecret;
