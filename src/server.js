@@ -466,7 +466,7 @@ function createCheckout(config) {
       url: webhookUrl, secret: newSecret, events: ['deposit_confirmed'], confirmations,
     });
 
-    const webhookId = (data.webhooks && data.webhooks[0] && data.webhooks[0].id) || data.id || data.webhookId || '';
+    const webhookId = (data.webhook && data.webhook.id) || (data.webhooks && data.webhooks[0] && data.webhooks[0].id) || data.id || '';
     saveWebhookSecret(newSecret);
     if (webhookId) saveWebhookId(webhookId);
     webhookSecret = newSecret;
