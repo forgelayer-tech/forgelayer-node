@@ -81,6 +81,16 @@ const CHAIN_NAMES = {
   bitcoin:  'Bitcoin',
 };
 
+// Native coin symbol for each supported chain.
+// Used to distinguish native deposits from token deposits in webhook asset validation.
+const CHAIN_NATIVE = {
+  ethereum: 'ETH',
+  bsc:      'BNB',
+  tron:     'TRX',
+  bitcoin:  'BTC',
+};
+
+
 // ── In-memory rate cache (process-wide, shared across all requests) ───────────
 const rateCache = new Map();
 
@@ -100,14 +110,33 @@ function createMemoryAdapter() {
 
   return {
     async getOrder(key)           { return store.get(key) || null; },
-    async saveOrder(key, order)   { store.set(key, { ...order, _savedAt: Date.now() }); },
+    async saveOrder(key, order)   { store.set(key, { ...order, sessionKey: key, _savedAt: Date.now() }); },
     async updateOrder(key, patch) {
       const existing = store.get(key);
       if (existing) store.set(key, { ...existing, ...patch, _savedAt: existing._savedAt });
     },
+    // Only returns pending orders — confirmed orders are never re-matched on a new webhook.
     async getOrderByAddress(address) {
       for (const order of store.values()) {
-        if (order.address === address) return order;
+        if (order.address === address && order.status === 'pending') return order;
+      }
+      return null;
+    },
+    // Returns any order that was confirmed by this txid — used to reject duplicate webhooks.
+    async getOrderByTxid(txid) {
+      for (const order of store.values()) {
+        if (order.confirmedTxid === txid) return order;
+      }
+      return null;
+    },
+    // Returns an address from a fully-completed order (grace period over) on the same chain,
+    // so it can be rotated into a new order when the ForgeLayer address limit is reached.
+    async findRecyclableAddress(chain) {
+      const now = Math.floor(Date.now() / 1000);
+      for (const order of store.values()) {
+        const done = order.status === 'expired' ||
+                     (order.status === 'confirmed' && order.graceEndsAt && order.graceEndsAt < now);
+        if (done && order.chain === chain && order.address) return order.address;
       }
       return null;
     },
@@ -149,10 +178,6 @@ async function generateAddress(apiKey, chain, label) {
   return data.address;
 }
 
-async function getBalance(apiKey, address, chain) {
-  const data = await flRequest('GET', '/addresses/' + encodeURIComponent(address) + '/balance', apiKey, null, { chain });
-  return parseFloat(data.balance ?? 0);
-}
 
 // ── CoinGecko rates ───────────────────────────────────────────────────────────
 
@@ -237,10 +262,12 @@ function createCheckout(config) {
   // Use developer-supplied hooks if provided, otherwise fall back to in-memory.
   const storage = (config.getOrder && config.saveOrder && config.updateOrder)
     ? {
-        getOrder:           config.getOrder.bind(config),
-        saveOrder:          config.saveOrder.bind(config),
-        updateOrder:        config.updateOrder.bind(config),
-        getOrderByAddress:  config.getOrderByAddress ? config.getOrderByAddress.bind(config) : null,
+        getOrder:          config.getOrder.bind(config),
+        saveOrder:         config.saveOrder.bind(config),
+        updateOrder:       config.updateOrder.bind(config),
+        getOrderByAddress:    config.getOrderByAddress    ? config.getOrderByAddress.bind(config)    : null,
+        getOrderByTxid:       config.getOrderByTxid       ? config.getOrderByTxid.bind(config)       : null,
+        findRecyclableAddress: config.findRecyclableAddress ? config.findRecyclableAddress.bind(config) : null,
       }
     : createMemoryAdapter();
 
@@ -270,10 +297,12 @@ function createCheckout(config) {
     return 'fl_' + crypto.createHash('sha256').update(String(orderId)).digest('hex').slice(0, 32);
   }
 
-  async function markConfirmed(sessionKey, order) {
-    await storage.updateOrder(sessionKey, { status: 'confirmed' });
+  async function markConfirmed(sessionKey, order, txid) {
+    const patch = { status: 'confirmed' };
+    if (txid) patch.confirmedTxid = txid;
+    await storage.updateOrder(sessionKey, patch);
     if (onConfirmed) {
-      onConfirmed(order.orderId, { ...order, status: 'confirmed' })
+      onConfirmed(order.orderId, { ...order, status: 'confirmed', confirmedTxid: txid })
         .catch(e => console.error('[ForgeLayer] onConfirmed error:', e));
     }
   }
@@ -301,11 +330,17 @@ function createCheckout(config) {
 
     const sessionKey = toSessionKey(orderId);
 
-    // ── Address reuse ─────────────────────────────────────────────────────────
-    // If reuseAddress is true and an active order already exists for this orderId,
-    // return the existing address instead of generating a new one.
+    // ── Check existing order ──────────────────────────────────────────────────
+    const existing = await storage.getOrder(sessionKey);
+
+    // Already paid — user closed the modal before seeing the confirmation.
+    // Return immediately so the frontend can show the success state.
+    if (existing && existing.status === 'confirmed') {
+      return res.json({ ok: true, alreadyPaid: true, orderId: existing.orderId, sessionKey });
+    }
+
+    // If reuseAddress is true and a live pending order exists, return the same address.
     if (reuse) {
-      const existing = await storage.getOrder(sessionKey);
       if (existing && existing.status === 'pending') {
         const now = Math.floor(Date.now() / 1000);
         if (now < existing.expiresAt) {
@@ -327,10 +362,26 @@ function createCheckout(config) {
       }
     }
 
-    // ── Generate new address ──────────────────────────────────────────────────
+    // ── Generate new address (recycle first, then API) ───────────────────────
+    // Check for a recyclable address before calling the ForgeLayer API so quota
+    // is conserved. Only fall back to generating a fresh address when no
+    // completed/expired order on this chain has a reusable address.
+    // Normalize to lowercase so webhook lookups always match regardless of API casing.
     let address;
-    try { address = await generateAddress(apiKey, chain, orderId); }
-    catch (e) { return res.status(500).json({ ok: false, error: 'Address generation failed: ' + e.message }); }
+    if (reuse && storage.findRecyclableAddress) {
+      address = await storage.findRecyclableAddress(chain);
+    }
+    if (!address) {
+      try {
+        address = (await generateAddress(apiKey, chain, orderId)).toLowerCase();
+      } catch (e) {
+        return res.status(503).json({
+          ok: false,
+          code: 'no_address_available',
+          error: 'No payment address available right now. Please try again in a few minutes.',
+        });
+      }
+    }
 
     let cryptoAmount = null;
     try {
@@ -338,8 +389,9 @@ function createCheckout(config) {
       if (rate > 0) cryptoAmount = (amount / rate).toFixed(8).replace(/\.?0+$/, '');
     } catch (_) { /* show fiat amount only */ }
 
-    const expiresAt = Math.floor(Date.now() / 1000) + window_ * 60;
-    const order = { orderId, address, chain, token, amount, currency, cryptoAmount, expiresAt, status: 'pending' };
+    const expiresAt   = Math.floor(Date.now() / 1000) + window_ * 60;
+    const graceEndsAt = expiresAt + gracePeriodSeconds;
+    const order = { orderId, address, chain, token, amount, currency, cryptoAmount, expiresAt, graceEndsAt, status: 'pending' };
 
     await storage.saveOrder(sessionKey, order);
 
@@ -375,16 +427,6 @@ function createCheckout(config) {
       await storage.updateOrder(key, { status: 'expired' });
       return res.json({ ok: true, status: 'expired' });
     }
-
-    // Check balance — works both within and outside the payment window
-    try {
-      const balance  = await getBalance(apiKey, order.address, order.chain);
-      const expected = parseFloat(order.cryptoAmount || 0);
-      if (expected > 0 && balance >= expected * 0.99) {
-        await markConfirmed(key, order);
-        return res.json({ ok: true, status: 'confirmed' });
-      }
-    } catch (_) { /* best-effort */ }
 
     // Payment window closed — tell the browser "expired" so it stops showing the UI,
     // but we keep accepting via webhook until the grace period ends.
@@ -430,27 +472,64 @@ function createCheckout(config) {
     catch (_) { return res.status(400).json({ ok: false, error: 'Invalid JSON body.' }); }
 
     if (event.event === 'deposit_confirmed') {
-      const orderId = event.data?.orderId || event.data?.label || '';
-      const address = event.data?.address || '';
+      const txid    = event.data?.txid    || '';
+      const orderId = event.data?.orderId || event.data?.label ||
+                      event.data?.userRef || event.data?.tag   || '';
+      // Normalize address to lowercase — ForgeLayer webhooks send lowercase hex but the
+      // API may return checksummed addresses when the address was first generated.
+      const address = (event.data?.address || '').toLowerCase();
+
+      // Reject duplicate webhooks — same txid already confirmed a previous order.
+      // This also prevents a replayed webhook from confirming a new order on a reused address.
+      if (txid && storage.getOrderByTxid) {
+        const duplicate = await storage.getOrderByTxid(txid);
+        if (duplicate) return res.status(200).json({ ok: true });
+      }
 
       let order, sessionKey;
       if (orderId) {
         sessionKey = toSessionKey(orderId);
         order = await storage.getOrder(sessionKey);
       } else if (address && storage.getOrderByAddress) {
+        // Fallback: match by address, pending orders only.
         order = await storage.getOrderByAddress(address);
         sessionKey = order?.sessionKey || '';
       }
 
+      if (!order) {
+        console.warn('[ForgeLayer] Webhook deposit_confirmed: no order found for address=' + address + ' orderId=' + (orderId || 'n/a'));
+      }
+
       if (order && sessionKey && order.status !== 'confirmed') {
         const now         = Math.floor(Date.now() / 1000);
-        const graceEndsAt = order.expiresAt + gracePeriodSeconds;
+        const graceEndsAt = order.graceEndsAt || (order.expiresAt + gracePeriodSeconds);
 
-        // Accept payment if within the payment window OR within the grace period
-        if (now < graceEndsAt) {
-          await markConfirmed(sessionKey, order);
+        // Verify the deposited asset type matches what the order expects.
+        // The webhook 'type' field is 'native' for BTC/ETH/BNB/TRX and 'token' for ERC-20/BEP-20/TRC-20.
+        // This prevents a native-coin deposit from confirming a token order (and vice versa)
+        // when the numeric amounts happen to match.
+        const webhookType   = event.data?.type || '';
+        const orderIsNative = (order.token || '').toUpperCase() === (CHAIN_NATIVE[order.chain] || '');
+        const typeOk = webhookType === ''              // ForgeLayer didn't send type — don't block
+          || (orderIsNative  && webhookType === 'native')
+          || (!orderIsNative && webhookType === 'token');
+
+        if (!typeOk) {
+          console.warn('[ForgeLayer] Asset type mismatch for order ' + (orderId || address) +
+            ': order expects ' + (orderIsNative ? 'native' : 'token') + ' but webhook type is "' + webhookType + '" — skipping.');
         } else {
-          console.warn('[ForgeLayer] Late payment received for order ' + orderId + ' but grace period has ended.');
+          const received = parseFloat(event.data?.amount || 0);
+          const expected = parseFloat(order.cryptoAmount || 0);
+          const amountOk = expected <= 0 || received >= expected;
+
+          if (!amountOk) {
+            console.warn('[ForgeLayer] Underpayment for order ' + (orderId || address) +
+              ': expected ' + expected + ' got ' + received + ' — waiting for top-up.');
+          } else if (now < graceEndsAt) {
+            await markConfirmed(sessionKey, order, txid);
+          } else {
+            console.warn('[ForgeLayer] Late payment for order ' + (orderId || address) + ' — grace period ended.');
+          }
         }
       }
     }
