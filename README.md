@@ -103,7 +103,18 @@ createCheckout({
 
 ## Storage Hooks
 
-By default, orders are kept in a process-local `Map` (fine for development). In production you should plug in your own database:
+By default, orders are kept in a process-local `Map` (fine for development). In production you should plug in your own database.
+
+There are **3 required hooks** and **3 optional hooks**. All required hooks must be provided together or the plugin falls back to the in-memory store.
+
+| Hook | Required | Purpose |
+|---|---|---|
+| `getOrder(sessionKey)` | ✅ | Load an order by session key |
+| `saveOrder(sessionKey, order)` | ✅ | Persist a new order |
+| `updateOrder(sessionKey, patch)` | ✅ | Apply a partial update to an existing order |
+| `getOrderByAddress(address)` | optional | Address-based webhook lookup when `label`/`orderId` are absent |
+| `getOrderByTxid(txid)` | optional | Replay attack prevention — detect duplicate webhooks |
+| `findRecyclableAddress(chain)` | optional | Reuse expired/confirmed addresses before calling the ForgeLayer API |
 
 ```js
 // MongoDB example
@@ -118,6 +129,28 @@ const checkout = createCheckout({
   },
   async updateOrder(sessionKey, patch) {
     await Order.updateOne({ sessionKey }, { $set: patch });
+  },
+
+  // Optional — address-based webhook lookup
+  async getOrderByAddress(address) {
+    return await Order.findOne({ address, status: 'pending' })
+      .sort({ createdAt: -1 }).lean();
+  },
+  // Optional — reject duplicate webhooks
+  async getOrderByTxid(txid) {
+    return await Order.findOne({ confirmedTxid: txid }).lean();
+  },
+  // Optional — reuse addresses to conserve API quota
+  async findRecyclableAddress(chain) {
+    const now = Math.floor(Date.now() / 1000);
+    const order = await Order.findOne({
+      chain,
+      $or: [
+        { status: 'expired' },
+        { status: 'confirmed', graceEndsAt: { $lt: now } },
+      ],
+    }).lean();
+    return order?.address ?? null;
   },
 
   onConfirmed: async (orderId, order) => {
@@ -141,10 +174,34 @@ const checkout = createCheckout({
   async updateOrder(sessionKey, patch) {
     await prisma.order.update({ where: { sessionKey }, data: patch });
   },
+
+  // Optional — address-based webhook lookup
+  async getOrderByAddress(address) {
+    return await prisma.order.findFirst({
+      where: { address, status: 'pending' },
+      orderBy: { createdAt: 'desc' },
+    });
+  },
+  // Optional — reject duplicate webhooks
+  async getOrderByTxid(txid) {
+    return await prisma.order.findFirst({ where: { confirmedTxid: txid } });
+  },
+  // Optional — reuse addresses to conserve API quota
+  async findRecyclableAddress(chain) {
+    const now = Math.floor(Date.now() / 1000);
+    return await prisma.order.findFirst({
+      where: {
+        chain,
+        OR: [
+          { status: 'expired' },
+          { status: 'confirmed', graceEndsAt: { lt: now } },
+        ],
+      },
+      select: { address: true },
+    }).then(o => o?.address ?? null);
+  },
 });
 ```
-
-All three hooks must be provided together. If any are omitted the plugin falls back to the built-in in-memory store.
 
 ### In-memory store behaviour
 
@@ -321,6 +378,27 @@ Returns an object with:
 ---
 
 ## Changelog
+
+### 1.1.5
+- **Webhook fix** — removed `userRef`/`tag` from `orderId` resolution chain; these fields may be absent or contain non-order values. Falls through to address-based lookup instead
+- **Webhook fix** — `txHash` now accepted as an alias for `txid` in the webhook payload
+
+### 1.1.4
+- **Proactive address recycling** — checks `findRecyclableAddress` before calling the ForgeLayer API, conserving quota
+- **txHash deduplication window** — extended from 24 h to 7 days
+- **Address normalization** — EVM (`0x`-prefix) addresses lowercased for consistent storage; Tron and Bitcoin addresses preserved as-is (Base58Check is case-sensitive)
+- **Asset type validation** — webhook `type` field (`native`/`token`) now validated against the order before confirming
+
+### 1.1.3
+- **Webhook event fix** — only `deposit_confirmed` is handled; other event names are acknowledged and ignored
+- **Exact amount check** — removed 1 % payment tolerance; received amount must be ≥ expected
+
+### 1.1.2
+- **Grace period fix** — grace end time is now stored on the order at creation; no longer recalculated from current config (which could differ if config changed after order was placed)
+- **Memory adapter fix** — `saveOrder` now stores `sessionKey` on the order so `getOrderByAddress` can return a complete object
+
+### 1.1.1
+- **Optional storage hooks** — `getOrderByAddress`, `getOrderByTxid`, `findRecyclableAddress` for address-based webhook lookup, replay prevention, and address recycling
 
 ### 1.1.0
 - **Storage hooks** — plug in any database via `getOrder` / `saveOrder` / `updateOrder` config options
