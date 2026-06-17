@@ -82,6 +82,13 @@ const CHAIN_NAMES = {
 };
 
 // Native coin symbol for each supported chain.
+// Normalize a blockchain address to a canonical form for storage and comparison.
+// EVM addresses (Ethereum, BSC) are hex — case-insensitive, safe to lowercase.
+// Tron and Bitcoin use Base58Check — case-sensitive, must be preserved as-is.
+function normalizeAddress(address) {
+  return address.startsWith('0x') ? address.toLowerCase() : address;
+}
+
 // Used to distinguish native deposits from token deposits in webhook asset validation.
 const CHAIN_NATIVE = {
   ethereum: 'ETH',
@@ -373,7 +380,7 @@ function createCheckout(config) {
     }
     if (!address) {
       try {
-        address = (await generateAddress(apiKey, chain, orderId)).toLowerCase();
+        address = normalizeAddress(await generateAddress(apiKey, chain, orderId));
       } catch (e) {
         return res.status(503).json({
           ok: false,
@@ -477,7 +484,7 @@ function createCheckout(config) {
                       event.data?.userRef || event.data?.tag   || '';
       // Normalize address to lowercase — ForgeLayer webhooks send lowercase hex but the
       // API may return checksummed addresses when the address was first generated.
-      const address = (event.data?.address || '').toLowerCase();
+      const address = normalizeAddress(event.data?.address || '');
 
       // Reject duplicate webhooks — same txid already confirmed a previous order.
       // This also prevents a replayed webhook from confirming a new order on a reused address.
