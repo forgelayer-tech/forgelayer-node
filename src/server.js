@@ -403,7 +403,7 @@ function createCheckout(config) {
     if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST required.' });
 
     const rawBody = await readBody(req);
-    const sig     = req.headers['x-fl-signature'] || '';
+    const sig     = req.headers['x-webhook-signature'] || req.headers['x-fl-signature'] || '';
 
     if (!webhookSecret) {
       console.error('[ForgeLayer] Webhook received but no webhookSecret configured. Call setupWebhook() first.');
