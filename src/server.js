@@ -479,9 +479,8 @@ function createCheckout(config) {
     catch (_) { return res.status(400).json({ ok: false, error: 'Invalid JSON body.' }); }
 
     if (event.event === 'deposit_confirmed') {
-      const txid    = event.data?.txid    || '';
-      const orderId = event.data?.orderId || event.data?.label ||
-                      event.data?.userRef || event.data?.tag   || '';
+      const txid    = event.data?.txid || event.data?.txHash || '';
+      const orderId = event.data?.orderId || event.data?.label || '';
       // Normalize address to lowercase — ForgeLayer webhooks send lowercase hex but the
       // API may return checksummed addresses when the address was first generated.
       const address = normalizeAddress(event.data?.address || '');
