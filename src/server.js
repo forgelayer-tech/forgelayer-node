@@ -105,6 +105,12 @@ function createMemoryAdapter() {
       const existing = store.get(key);
       if (existing) store.set(key, { ...existing, ...patch, _savedAt: existing._savedAt });
     },
+    async getOrderByAddress(address) {
+      for (const order of store.values()) {
+        if (order.address === address) return order;
+      }
+      return null;
+    },
   };
 }
 
@@ -231,9 +237,10 @@ function createCheckout(config) {
   // Use developer-supplied hooks if provided, otherwise fall back to in-memory.
   const storage = (config.getOrder && config.saveOrder && config.updateOrder)
     ? {
-        getOrder:    config.getOrder.bind(config),
-        saveOrder:   config.saveOrder.bind(config),
-        updateOrder: config.updateOrder.bind(config),
+        getOrder:           config.getOrder.bind(config),
+        saveOrder:          config.saveOrder.bind(config),
+        updateOrder:        config.updateOrder.bind(config),
+        getOrderByAddress:  config.getOrderByAddress ? config.getOrderByAddress.bind(config) : null,
       }
     : createMemoryAdapter();
 
@@ -423,11 +430,19 @@ function createCheckout(config) {
     catch (_) { return res.status(400).json({ ok: false, error: 'Invalid JSON body.' }); }
 
     if (event.event === 'deposit_confirmed') {
-      const orderId    = event.data?.orderId || event.data?.label || '';
-      const sessionKey = toSessionKey(orderId);
-      const order      = await storage.getOrder(sessionKey);
+      const orderId = event.data?.orderId || event.data?.label || '';
+      const address = event.data?.address || '';
 
-      if (order && order.status !== 'confirmed') {
+      let order, sessionKey;
+      if (orderId) {
+        sessionKey = toSessionKey(orderId);
+        order = await storage.getOrder(sessionKey);
+      } else if (address && storage.getOrderByAddress) {
+        order = await storage.getOrderByAddress(address);
+        sessionKey = order?.sessionKey || '';
+      }
+
+      if (order && sessionKey && order.status !== 'confirmed') {
         const now         = Math.floor(Date.now() / 1000);
         const graceEndsAt = order.expiresAt + gracePeriodSeconds;
 
